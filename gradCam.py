@@ -24,7 +24,9 @@ class sampleGen:
     def generateOneImage(self):
         posList = []
         guard = self.tgtNum*10
-        while len(posList)<self.tgtNum:
+        #curNum = random.randint(1,self.tgtNum)
+        curNum = self.tgtNum
+        while len(posList)<curNum:
             guard -= 1
             if guard < 0:
                 guard = self.tgtNum * 10
@@ -48,11 +50,15 @@ class sampleGen:
             img  = img.rotate(r)
             res.paste(img,(int(x-14),int(y-14),int(x+14),int(y+14)))
             lab.append(label[idx])
+
+        #while len(label)<=self.tgtNum:
+        #    lab.append(-1)
+
         return np.asarray(res),lab
 
     def buildOneHot(self,x,f):
         res = np.zeros((self.tgtNum+1),dtype=np.int32)
-        num = int(sum([f(a) for a in x]))
+        num = int(sum([ ( a>=0 and f(a) ) for a in x]))
         res[num] = 1
         return res
 
@@ -191,7 +197,7 @@ class net:
             with tf.variable_scope("conv1"):
                 # conv1
                 h = tf.expand_dims(h,axis=3)
-                self.conv1_w, self.conv1_b = self._conv_variable([5,5,1,10])
+                self.conv1_w, self.conv1_b = self._conv_variable([5,5,1,16])
                 h = self._conv2d(h, self.conv1_w, stride=1) + self.conv1_b
                 h = self.leakyReLU(h)
                 h_conv1 = h
@@ -202,7 +208,7 @@ class net:
 
             with tf.variable_scope("conv2"):
                 # conv2
-                self.conv2_w, self.conv2_b = self._conv_variable([5,5,10,10])
+                self.conv2_w, self.conv2_b = self._conv_variable([5,5,16,32])
                 h = self._conv2d(h, self.conv2_w, stride=1) + self.conv2_b
                 h = self.leakyReLU(h)
                 h_conv2 = h
@@ -213,7 +219,7 @@ class net:
 
             with tf.variable_scope("conv3"):
                 # conv3
-                self.conv3_w, self.conv3_b = self._conv_variable([3,3,10,10])
+                self.conv3_w, self.conv3_b = self._conv_variable([3,3,32,64])
                 h = self._conv2d(h, self.conv3_w, stride=1) + self.conv3_b
                 h = self.leakyReLU(h)
                 h_conv3 = h
