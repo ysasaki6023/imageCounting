@@ -4,6 +4,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import os,argparse
 import collections,sys,csv,shutil,random
+import cv2
 
 from tensorflow.examples.tutorials.mnist import input_data
 mnist = input_data.read_data_sets("MNIST_data/", one_hot=False)
@@ -119,6 +120,11 @@ class net:
         self.inputSize = inputSize
         self.learning_rate = learning_rate
         self.saveFolder = saveFolder
+        self.camFolder  = os.path.join(saveFolder,"camImage")
+        if not os.path.exists(self.camFolder):
+            os.makedirs(self.camFolder)
+            #shutil.rmtree(self.camFolder)
+
         self.collection_loss = None
         self.collection_accuracy = None
         self.model()
@@ -152,6 +158,29 @@ class net:
     def leakyReLU(self,x,alpha=0.1):
         return tf.maximum(x*alpha,x)
 
+    def gradCam(self,conv_x,fc_x,fc_target_idx,iBatch=0):
+        with tf.variable_scope("gradCam"):
+            nTotCls = [int(x) for x in fc_x[iBatch].get_shape()][0]
+            onehot = tf.sparse_to_dense(fc_target_idx,[nTotCls],1.0)
+            signal = fc_x * onehot
+            loss   = tf.reduce_mean(signal)
+            grads = tf.gradients(loss,[conv_x])[0]
+            grads = tf.div(grads, tf.sqrt(tf.reduce_mean(tf.square(grads))) + 1e-5)
+
+            outputs = conv_x[iBatch]
+            gradval = grads[iBatch]
+
+            weights = tf.reduce_mean(gradval, axis=(0,1)) # weights is calculated by each feature layer
+            s1,s2,s3 = [int(x) for x in outputs.get_shape()]
+            cam     = tf.zeros((s1,s2),dtype=tf.float32)
+
+            for i in range(s3):
+                cam     += weights[i] * outputs[:,:,i]
+
+            cam = tf.nn.relu(cam)
+
+            return cam
+
     def model(self):
         with tf.variable_scope("net") as scope:
             #############################
@@ -168,6 +197,7 @@ class net:
                 self.conv1_w, self.conv1_b = self._conv_variable([15,15,1,10])
                 h = self._conv2d(h, self.conv1_w, stride=1) + self.conv1_b
                 h = self.leakyReLU(h)
+                h_conv1 = h
 
                 # maxpool1
                 h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding="VALID")
@@ -177,6 +207,7 @@ class net:
                 self.conv2_w, self.conv2_b = self._conv_variable([3,3,10,10])
                 h = self._conv2d(h, self.conv2_w, stride=1) + self.conv2_b
                 h = self.leakyReLU(h)
+                h_conv2 = h
 
                 # maxpool2
                 h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding="VALID")
@@ -194,6 +225,7 @@ class net:
                 # fc2
                 self.fc2_w, self.fc2_b = self._fc_variable([32, self.nMax])
                 h = tf.matmul(h, self.fc2_w) + self.fc2_b
+                h_fc2 = h
 
             with tf.variable_scope("softmax"):
                 self.y  = tf.nn.softmax(h)
@@ -207,6 +239,13 @@ class net:
                                          + tf.nn.l2_loss(self.fc1_w)   + tf.nn.l2_loss(self.fc2_w) )
 
             self.loss_total = self.loss_class+ self.loss_l2
+
+            #############################
+            ### grad-cam definition
+            iBatch = 0
+            answer = tf.argmax(self.y,axis=1)[iBatch]
+            self.gcam1 = self.gradCam(h_conv1, h_fc2, fc_target_idx=answer, iBatch=iBatch)
+            self.gcam2 = self.gradCam(h_conv2, h_fc2, fc_target_idx=answer, iBatch=iBatch)
 
             #############################
             ### accuracy definition
@@ -258,6 +297,25 @@ class net:
         if step>0 and step%100==0:
             self.writer.add_summary(summary,step)
             self.saver.save(self.sess,os.path.join(self.saveFolder,"model.ckpt"),step)
+        if step%100 == 0:
+            cam  = self.sess.run(self.gcam2, feed_dict={self.x:batch_x, self.t:batch_t})
+
+            cam  = np.expand_dims(cam,axis=2)
+            cam  = cv2.resize(cam,(self.inputSize[0],self.inputSize[1]))
+            cam /= np.max(cam)
+            cam = cv2.applyColorMap(np.uint8(255*cam), cv2.COLORMAP_JET)
+
+            img  = batch_x[0] # take iBatch=0. Same for gcam internally
+            img  = np.expand_dims(img,axis=2)
+            img  = np.tile(img,[1,1,3])
+            img /= np.max(img)
+            img *= 255.
+
+            ipzImg = img + cam * 0.5
+
+            cv2.imwrite(os.path.join(self.camFolder,"%d_orig.png"%step),   img)
+            cv2.imwrite(os.path.join(self.camFolder,"%d_gcam.png"%step),ipzImg)
+
         return
 
     def load(self, model_path=None):
@@ -274,8 +332,6 @@ if __name__=="__main__":
     args = parser.parse_args()
 
     smp = sampleGen(size=[args.inputSize,args.inputSize],minLen=28,tgtNum=args.imgNMax)
-    #smp.prepareImages("images",1000)
-    #smp.prepareImages("images",100*1000)
 
     n = net(args.imgNMax+1,args.nBatch,[args.inputSize,args.inputSize],learning_rate=args.learnRate,saveFolder=args.saveFolder)
     n.load(args.reload)
