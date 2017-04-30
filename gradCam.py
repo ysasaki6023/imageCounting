@@ -36,8 +36,6 @@ class sampleGen:
             isGood = True
             for a in posList:
                 if np.sqrt( (pos[1]-a[1])**2 + (pos[2]-a[2])**2) < self.minLen: isGood=False
-                #if pos[1]<28 or (self.size[0]-28)<pos[1] : isGood=False
-                #if pos[2]<28 or (self.size[1]-28)<pos[2] : isGood=False
             if not isGood : continue
             posList.append(pos)
 
@@ -123,7 +121,6 @@ class net:
         self.camFolder  = os.path.join(saveFolder,"camImage")
         if not os.path.exists(self.camFolder):
             os.makedirs(self.camFolder)
-            #shutil.rmtree(self.camFolder)
 
         self.collection_loss = None
         self.collection_accuracy = None
@@ -161,9 +158,9 @@ class net:
     def gradCam(self,conv_x,fc_x,fc_target_idx,iBatch=0):
         with tf.variable_scope("gradCam"):
             nTotCls = [int(x) for x in fc_x[iBatch].get_shape()][0]
-            onehot = tf.sparse_to_dense(fc_target_idx,[nTotCls],1.0)
-            signal = fc_x * onehot
-            loss   = tf.reduce_mean(signal)
+            onehot = tf.sparse_to_dense([fc_target_idx],[nTotCls],1.0)
+            loss   = tf.reduce_mean(fc_x * onehot)
+            #loss   = tf.reduce_mean((fc_x - onehot)**2) # almost the same results... But less controllable as it eliminates +/- information
             grads = tf.gradients(loss,[conv_x])[0]
             grads = tf.div(grads, tf.sqrt(tf.reduce_mean(tf.square(grads))) + 1e-5)
 
@@ -194,23 +191,36 @@ class net:
             with tf.variable_scope("conv1"):
                 # conv1
                 h = tf.expand_dims(h,axis=3)
-                self.conv1_w, self.conv1_b = self._conv_variable([15,15,1,10])
+                self.conv1_w, self.conv1_b = self._conv_variable([5,5,1,10])
                 h = self._conv2d(h, self.conv1_w, stride=1) + self.conv1_b
                 h = self.leakyReLU(h)
                 h_conv1 = h
 
                 # maxpool1
                 h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding="VALID")
+                h_pool1 = h
 
             with tf.variable_scope("conv2"):
                 # conv2
-                self.conv2_w, self.conv2_b = self._conv_variable([3,3,10,10])
+                self.conv2_w, self.conv2_b = self._conv_variable([5,5,10,10])
                 h = self._conv2d(h, self.conv2_w, stride=1) + self.conv2_b
                 h = self.leakyReLU(h)
                 h_conv2 = h
 
                 # maxpool2
                 h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding="VALID")
+                h_pool2 = h
+
+            with tf.variable_scope("conv3"):
+                # conv3
+                self.conv3_w, self.conv3_b = self._conv_variable([3,3,10,10])
+                h = self._conv2d(h, self.conv3_w, stride=1) + self.conv3_b
+                h = self.leakyReLU(h)
+                h_conv3 = h
+
+                # maxpool2
+                h = tf.nn.max_pool(h, ksize=[1,2,2,1], strides=[1,2,2,1], padding="VALID")
+                h_pool3 = h
 
             with tf.variable_scope("fc1"):
                 # fc1
@@ -232,10 +242,9 @@ class net:
             
             #############################
             ### loss definition
-            #self.loss_class  = tf.nn.softmax_cross_entropy_with_logits(logits=tf.reshape(self.y,[-1]),labels=tf.reshape(self.t,[-1]))
             self.loss_class  = -tf.reduce_sum( tf.reshape(self.t,[-1]) * tf.log(tf.reshape(self.y,[-1])) )
 
-            self.loss_l2     = 1e-10 * (   tf.nn.l2_loss(self.conv1_w) + tf.nn.l2_loss(self.conv2_w)
+            self.loss_l2     = 1e-10 * (   tf.nn.l2_loss(self.conv1_w) + tf.nn.l2_loss(self.conv2_w) + tf.nn.l2_loss(self.conv3_w)
                                          + tf.nn.l2_loss(self.fc1_w)   + tf.nn.l2_loss(self.fc2_w) )
 
             self.loss_total = self.loss_class+ self.loss_l2
@@ -244,8 +253,13 @@ class net:
             ### grad-cam definition
             iBatch = 0
             answer = tf.argmax(self.y,axis=1)[iBatch]
-            self.gcam1 = self.gradCam(h_conv1, h_fc2, fc_target_idx=answer, iBatch=iBatch)
-            self.gcam2 = self.gradCam(h_conv2, h_fc2, fc_target_idx=answer, iBatch=iBatch)
+            self.cam_conv1 = self.gradCam(h_conv1, h_fc2, fc_target_idx=answer, iBatch=iBatch)
+            self.cam_conv2 = self.gradCam(h_conv2, h_fc2, fc_target_idx=answer, iBatch=iBatch)
+            self.cam_conv3 = self.gradCam(h_conv3, h_fc2, fc_target_idx=answer, iBatch=iBatch)
+
+            self.cam_pool1 = self.gradCam(h_pool1, h_fc2, fc_target_idx=answer, iBatch=iBatch)
+            self.cam_pool2 = self.gradCam(h_pool2, h_fc2, fc_target_idx=answer, iBatch=iBatch)
+            self.cam_pool3 = self.gradCam(h_pool3, h_fc2, fc_target_idx=answer, iBatch=iBatch)
 
             #############################
             ### accuracy definition
@@ -260,6 +274,8 @@ class net:
             tf.summary.histogram("conv1_b"   ,self.conv1_b)
             tf.summary.histogram("conv2_w"   ,self.conv2_w)
             tf.summary.histogram("conv2_b"   ,self.conv2_b)
+            tf.summary.histogram("conv3_w"   ,self.conv3_w)
+            tf.summary.histogram("conv3_b"   ,self.conv3_b)
             tf.summary.histogram("fc1_w"   ,self.fc1_w)
             tf.summary.histogram("fc1_b"   ,self.fc1_b)
             tf.summary.histogram("fc2_w"   ,self.fc2_w)
@@ -286,6 +302,21 @@ class net:
 
         return
 
+    def gradCamGenImage(self,img,cam):
+        cam  = np.expand_dims(cam,axis=2)
+        cam  = cv2.resize(cam,(self.inputSize[0],self.inputSize[1]))
+        cam /= np.max(cam)
+        cam = cv2.applyColorMap(np.uint8(255*cam), cv2.COLORMAP_JET)
+
+        img  = np.expand_dims(img,axis=2)
+        img  = np.tile(img,[1,1,3])
+        img /= np.max(img)
+        img *= 255.
+
+        ipzImg = img + cam * 0.5
+
+        return ipzImg
+
     def train(self,step,batch_x,batch_t):
         _,summary,loss,accuracy = self.sess.run([self.optimizer,self.summary,self.loss_total,self.accuracy],feed_dict={self.x:batch_x,self.t:batch_t})
         if not self.collection_loss    : self.collection_loss     = collections.deque(maxlen=100)
@@ -298,23 +329,16 @@ class net:
             self.writer.add_summary(summary,step)
             self.saver.save(self.sess,os.path.join(self.saveFolder,"model.ckpt"),step)
         if step%100 == 0:
-            cam  = self.sess.run(self.gcam2, feed_dict={self.x:batch_x, self.t:batch_t})
-
-            cam  = np.expand_dims(cam,axis=2)
-            cam  = cv2.resize(cam,(self.inputSize[0],self.inputSize[1]))
-            cam /= np.max(cam)
-            cam = cv2.applyColorMap(np.uint8(255*cam), cv2.COLORMAP_JET)
-
+            cam_conv1,cam_conv2,cam_conv3,cam_pool1,cam_pool2,cam_pool3  = self.sess.run([self.cam_conv1,self.cam_conv2,self.cam_conv3,self.cam_pool1,self.cam_pool2,self.cam_pool3], feed_dict={self.x:batch_x, self.t:batch_t})
             img  = batch_x[0] # take iBatch=0. Same for gcam internally
-            img  = np.expand_dims(img,axis=2)
-            img  = np.tile(img,[1,1,3])
-            img /= np.max(img)
-            img *= 255.
 
-            ipzImg = img + cam * 0.5
-
-            cv2.imwrite(os.path.join(self.camFolder,"%d_orig.png"%step),   img)
-            cv2.imwrite(os.path.join(self.camFolder,"%d_gcam.png"%step),ipzImg)
+            cv2.imwrite(os.path.join(self.camFolder,"%d_origi.png"%step),   img)
+            cv2.imwrite(os.path.join(self.camFolder,"%d_conv1.png"%step),self.gradCamGenImage(img,cam_conv1))
+            cv2.imwrite(os.path.join(self.camFolder,"%d_conv2.png"%step),self.gradCamGenImage(img,cam_conv2))
+            cv2.imwrite(os.path.join(self.camFolder,"%d_conv3.png"%step),self.gradCamGenImage(img,cam_conv3))
+            cv2.imwrite(os.path.join(self.camFolder,"%d_pool1.png"%step),self.gradCamGenImage(img,cam_pool1))
+            cv2.imwrite(os.path.join(self.camFolder,"%d_pool2.png"%step),self.gradCamGenImage(img,cam_pool2))
+            cv2.imwrite(os.path.join(self.camFolder,"%d_pool3.png"%step),self.gradCamGenImage(img,cam_pool3))
 
         return
 
@@ -342,6 +366,5 @@ if __name__=="__main__":
 
     while True:
         batch_x, batch_t = smp.generateBatch(args.nBatch,f_odd)
-        #batch_x, batch_t = smp.loadBatch("images",args.nBatch,f_odd)
         n.train(step,batch_x,batch_t)
         step += 1
