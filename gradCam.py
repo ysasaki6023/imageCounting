@@ -248,7 +248,7 @@ class net:
             
             #############################
             ### loss definition
-            self.loss_class  = -tf.reduce_sum( tf.reshape(self.t,[-1]) * tf.log(tf.reshape(self.y,[-1])) )
+            self.loss_class  = -tf.reduce_sum( tf.reshape(self.t,[-1]) * tf.log(tf.clip_by_value(tf.reshape(self.y,[-1]),1e-20,1e10)) )
 
             self.loss_l2     = 1e-10 * (   tf.nn.l2_loss(self.conv1_w) + tf.nn.l2_loss(self.conv2_w) + tf.nn.l2_loss(self.conv3_w)
                                          + tf.nn.l2_loss(self.fc1_w)   + tf.nn.l2_loss(self.fc2_w) )
